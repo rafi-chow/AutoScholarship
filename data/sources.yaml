@@ -1,0 +1,92 @@
+# Access modes are deliberately conservative. Change a source to public_allowed only
+# after reviewing its current Terms of Service and robots policy. URL fetching fails closed.
+sources:
+  - name: UTA Public Scholarship Pages
+    url: https://www.uta.edu/administration/fao/scholarships
+    category: uta_public
+    access_mode: public_allowed
+    enabled: true
+    rss_url: null
+    allow_submit_automation: false
+    notes: Official public UTA scholarship pages. Robots allows this path; login links are excluded and Mav ScholarShop remains manual-only.
+
+  - name: UTA Mav ScholarShop
+    url: https://uta.academicworks.com/
+    category: uta_manual
+    access_mode: manual_only
+    enabled: true
+    rss_url: null
+    allow_submit_automation: false
+    notes: University portal; sign in manually and paste opportunity text. Never automate login or submission.
+
+  - name: Texas local scholarship source — configure me
+    url: https://example.org/scholarships/texas-local
+    category: texas_local
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: DFW local scholarship source — configure me
+    url: https://example.org/scholarships/dfw-local
+    category: dfw_local
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: CS and STEM scholarship source — configure me
+    url: https://example.org/scholarships/cs-stem
+    category: cs_stem
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: Engineering and aerospace source — configure me
+    url: https://example.org/scholarships/engineering-aerospace
+    category: engineering_aerospace
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: South Asian, Bengali, and Asian community source — configure me
+    url: https://example.org/scholarships/south-asian
+    category: south_asian_bengali_asian
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: Muslim community scholarship source — configure me
+    url: https://example.org/scholarships/muslim-community
+    category: muslim_community
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: National general scholarship source — configure me
+    url: https://example.org/scholarships/national
+    category: national_general
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Replace with a reviewed source before enabling access.
+
+  - name: No-essay quick-apply source — configure me
+    url: https://example.org/scholarships/no-essay
+    category: no_essay_quick_apply
+    access_mode: blocked
+    enabled: false
+    rss_url: null
+    allow_submit_automation: false
+    notes: Placeholder only. Enable only after policy review; classify sweepstakes as low expected value.

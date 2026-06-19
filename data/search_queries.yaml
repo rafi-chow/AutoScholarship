@@ -1,0 +1,18 @@
+queries:
+  - {query: "UTA scholarships computer science", category: uta_cs, priority: 10, max_results: 10, notes: "School-specific CS opportunities."}
+  - {query: "UTA engineering scholarships", category: uta_engineering, priority: 10, max_results: 10, notes: "School-specific engineering opportunities."}
+  - {query: "Texas computer science scholarships undergraduate", category: texas_cs, priority: 9, max_results: 10, notes: "Texas undergraduate CS."}
+  - {query: "DFW STEM scholarships undergraduate", category: dfw_stem, priority: 9, max_results: 10, notes: "Local DFW STEM."}
+  - {query: "Texas STEM scholarships no recommendation", category: texas_stem, priority: 9, max_results: 10, notes: "Prefer no recommendation requirement."}
+  - {query: "aerospace engineering software scholarship undergraduate", category: aerospace_software, priority: 9, max_results: 10, notes: "Aerospace/software fit."}
+  - {query: "aviation scholarship computer science Texas", category: aviation_cs, priority: 9, max_results: 10, notes: "Texas aviation and CS."}
+  - {query: "Bell Textron related scholarship student", category: bell_adjacent, priority: 8, max_results: 8, notes: "Bell-adjacent public opportunities; verify independence and eligibility."}
+  - {query: "data analytics scholarship undergraduate", category: data_analytics, priority: 8, max_results: 10, notes: "Data and analytics."}
+  - {query: "software engineering scholarship Texas", category: software_texas, priority: 9, max_results: 10, notes: "Texas software engineering."}
+  - {query: "South Asian scholarship undergraduate Texas", category: south_asian, priority: 8, max_results: 10, notes: "South Asian community opportunities."}
+  - {query: "Bengali scholarship undergraduate", category: bengali, priority: 8, max_results: 10, notes: "Bengali community opportunities."}
+  - {query: "Asian American scholarship computer science", category: asian_american_cs, priority: 8, max_results: 10, notes: "Asian American and CS."}
+  - {query: "Muslim student scholarship Texas", category: muslim_texas, priority: 8, max_results: 10, notes: "Texas Muslim community opportunities."}
+  - {query: "Kappa Sigma scholarship undergraduate", category: kappa_sigma, priority: 7, max_results: 8, notes: "Fraternity-affiliated scholarships; verify recommendation requirements."}
+  - {query: "no essay scholarship computer science", category: no_essay_cs, priority: 5, max_results: 8, notes: "Low-effort, low-expected-value queue."}
+  - {query: "quick apply scholarship undergraduate", category: quick_apply, priority: 4, max_results: 8, notes: "Quick apply; verify legitimacy."}

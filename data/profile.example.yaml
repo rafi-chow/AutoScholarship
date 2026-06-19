@@ -1,0 +1,102 @@
+full_name: Rafi Chowdhury
+preferred_name: Rafi
+email: null
+phone: null
+linkedin: linkedin.com/in/chowdhury-rafi
+github: github.com/rafi-chow
+address:
+  city: Colleyville
+  state: TX
+  country: US
+citizenship: U.S. citizen
+eligibility_preferences:
+  texas_resident: true
+  first_generation: false
+  fafsa_completed: false
+  household_income_range: null
+  identity_scholarship_preferences: [Bengali, South Asian, Asian, Muslim]
+  family_context_requires_details: true
+  exact_service_hours_available: false
+
+education:
+  - school: University of Texas at Arlington
+    degree: Bachelor of Science
+    major: Computer Science
+    minor: null
+    gpa: 3.346
+    graduation_date: 2028-05-01
+    class_level: Undergraduate
+
+resume_bullets:
+  - Build and improve software through a Bell Textron Cooperative Work Experience Program internship.
+  - Balance computer science coursework with professional and extracurricular commitments.
+
+coursework:
+  - Algorithms and Data Structures
+  - Operating Systems
+  - Software Engineering
+
+technical_skills: [Python, Java, C, JavaScript, SQL, Flask, pytest, SQLite, Azure DevOps, Power BI]
+
+work_experience:
+  - organization: Bell Textron
+    title: CWEP Intern
+    location: Fort Worth, TX
+    start_date: null
+    end_date: null
+    current: true
+    bullets:
+      - Replace this example with a verified, outcome-focused resume bullet.
+
+activities:
+  - organization: Add verified organization
+    role: Add verified role
+    description: Replace this placeholder with a factual extracurricular example.
+    start_date: null
+    end_date: null
+
+projects:
+  - name: Lyric Karaoke Start Detector
+    dates: Nov 2025 – Jan 2026
+    technologies: [Python, scikit-learn, Flask, pytest, GitHub Actions]
+    summary: Built an open-source detector with reproducible evaluation, tests, and CI.
+
+career_goals:
+  - Build dependable software and engineering systems.
+  - Explore work at the intersection of computer science and aerospace.
+
+interests:
+  - computer science
+  - software engineering
+  - engineering
+  - aerospace
+  - STEM
+
+story_blocks:
+  - id: bell-cwep-growth
+    title: Growth through the Bell Textron CWEP internship
+    themes: [career growth, engineering, teamwork]
+    situation: Replace with verified context about a specific challenge or opportunity.
+    action: Replace with the actions Rafi personally took.
+    result: Replace with a measurable or clearly observable result.
+    reflection: Replace with what the experience changed or clarified.
+
+documents:
+  resume: ../documents/Rafi_Chowdhury_Resume.pdf
+  transcript: null
+  financial_aid_letter: null
+  recommendation_letters: []
+  other: {}
+
+scholarship_preferences:
+  minimum_award: 250
+  skip_recommendation_required: true
+  local_first: true
+  priority_categories: [UTA, Texas, DFW, computer science, STEM, engineering, aerospace, leadership]
+  essay_voice: real college student, clear, practical, not corporate
+  prohibited_claims:
+    - first-generation status
+    - FAFSA completion
+    - low-income hardship
+    - exact community service hours
+    - unverified family or immigration details

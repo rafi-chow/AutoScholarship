@@ -1,0 +1,51 @@
+version: 1
+fields:
+  first_name:
+    profile_key: first_name
+    labels: [first name, given name, applicant first name]
+  last_name:
+    profile_key: last_name
+    labels: [last name, family name, surname, applicant last name]
+  email:
+    profile_key: email
+    labels: [email, email address, applicant email]
+  phone:
+    profile_key: phone
+    labels: [phone, phone number, mobile phone, applicant phone]
+  city:
+    profile_key: city
+    labels: [city, home city, applicant city]
+  state:
+    profile_key: state
+    labels: [state, state of residence, home state]
+  school:
+    profile_key: school
+    labels: [school, current school, college, college name]
+  university:
+    profile_key: school
+    labels: [university, university name, current university]
+  major:
+    profile_key: major
+    labels: [major, field of study, academic major, program of study]
+  gpa:
+    profile_key: gpa
+    labels: [gpa, cumulative gpa, current gpa]
+  graduation_date:
+    profile_key: graduation_date
+    labels: [graduation date, expected graduation, anticipated graduation, graduation month]
+  citizenship:
+    profile_key: citizenship
+    labels: [citizenship, citizenship status, us citizenship]
+  texas_resident:
+    profile_key: texas_resident
+    labels: [texas resident, texas residency, resident of texas]
+  essay:
+    profile_key: essay
+    labels: [essay, essay response, personal statement, short answer, response]
+  linkedin:
+    profile_key: linkedin
+    labels: [linkedin, linkedin url, linkedin profile]
+  github:
+    profile_key: github
+    labels: [github, github url, github profile]
+sites: {}
