@@ -230,6 +230,20 @@ def build_autofill_plan(
                 value=value,
             )
         )
+    essay_fills = [fill for fill in fills if fill.mapping_name == "essay"]
+    if len(essay_fills) > 1:
+        ambiguous = [
+            fill for fill in essay_fills
+            if _normalize(_field_text(fields[fill.field_index]))
+            not in {_normalize(label) for label in mappings.fields["essay"].labels}
+        ]
+        for fill in ambiguous:
+            fills.remove(fill)
+            manual.append(ManualField(
+                field_index=fill.field_index,
+                label=fill.field_label,
+                reason="Multiple essay fields detected; manually confirm which approved draft belongs here.",
+            ))
     return AutofillPlan(fills=fills, manual_fields=manual)
 
 
@@ -453,6 +467,13 @@ def autofill_application(
     if scholarship.application_url is None:
         raise AutofillError("Scholarship has no application URL.")
     drafts = drafts or []
+    # Essay content has a separate, explicit approval gate. A caller cannot bypass it
+    # merely by passing text into this function.
+    if essay_text and not any(
+        item.scholarship_id == scholarship.id and item.status == DraftStatus.APPROVED_AUTOFILL
+        for item in drafts
+    ):
+        essay_text = None
     url = str(scholarship.application_url)
     policy = check_source_policy(source, PolicyAction.AUTOFILL)
     if not policy.allowed or not source_matches_url(source, url):
@@ -633,7 +654,7 @@ def _source_for_scholarship(scholarship: Scholarship, sources_path: Path) -> Sou
 
 def _ready_essay_text(scholarship_id: int, drafts: list[DraftRecord]) -> str | None:
     draft = next(
-        (item for item in drafts if item.scholarship_id == scholarship_id and item.status == DraftStatus.READY_TO_REVIEW),
+        (item for item in drafts if item.scholarship_id == scholarship_id and item.status == DraftStatus.APPROVED_AUTOFILL),
         None,
     )
     if draft is None:

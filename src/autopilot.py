@@ -12,16 +12,19 @@ from dotenv import load_dotenv
 from pydantic import Field
 
 from src.db import ScholarshipDatabase
-from src.discovery import DiscoveryResult, run_discovery
+from src.discovery import DiscoveryResult, run_discovery, write_discovery_diagnostics
 from src.drafter import generate_and_save_draft
 from src.export import (
     DEFAULT_EXPORT_DIR,
     export_approval_queue,
+    export_application_packet,
     export_quick_apply_queue_markdown,
     export_weekly_action_list,
 )
 from src.models import DraftRecord, Profile, Recommendation, ScholarshipRecord, ScholarshipStatus, StrictModel
 from src.profile import load_profile
+from src.quality import retriage_all
+from src.llm import build_llm
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +39,12 @@ class AutopilotStats(StrictModel):
     apply_now_ready: int = 0
     blocked_manual: int = 0
     errors: int = 0
+    prompts_found: int = 0
+    prompts_not_found: int = 0
+    packets_generated: int = 0
+    drafts_skipped_no_prompt: int = 0
+    drafts_skipped_sensitive_input: int = 0
+    drafts_failed_llm: int = 0
 
 
 class AutopilotResult(StrictModel):
@@ -64,6 +73,12 @@ def _write_summary(result: AutopilotResult, database: ScholarshipDatabase, outpu
         f"- New scholarships: {result.stats.new}",
         f"- Duplicates: {result.stats.duplicates}",
         f"- Drafts generated: {result.stats.drafts_generated}",
+        f"- Prompts found: {result.stats.prompts_found}",
+        f"- Prompts not found: {result.stats.prompts_not_found}",
+        f"- Application packets generated: {result.stats.packets_generated}",
+        f"- Drafts skipped because no prompt: {result.stats.drafts_skipped_no_prompt}",
+        f"- Drafts skipped because sensitive user input is missing: {result.stats.drafts_skipped_sensitive_input}",
+        f"- Drafts failed due to LLM error: {result.stats.drafts_failed_llm}",
         f"- Quick Apply ready: {result.stats.quick_apply_ready}",
         f"- Apply Now ready: {result.stats.apply_now_ready}",
         f"- Blocked/manual items: {result.stats.blocked_manual}",
@@ -96,40 +111,58 @@ def run_autopilot(
     database.initialize()
     started = datetime.now()
     discovery = discovery_runner(database, profile)
+    write_discovery_diagnostics(discovery, output_dir)
+    retriage_all(database, profile)
     errors = list(discovery.errors)
     warnings = list(discovery.warnings)
     draft_ids: list[int] = []
-    new_records = [
-        record for item_id in discovery.new_scholarship_ids
-        if (record := database.get_scholarship(item_id)) is not None
-    ]
-    # Low-effort Quick Apply entries are prepared before Apply Now essays.
-    new_records.sort(
-        key=lambda item: (
-            not (item.ranking and item.ranking.recommendation == Recommendation.QUICK_APPLY),
-            -(item.ranking.total_score if item.ranking else 0),
-        )
-    )
-    for record in new_records:
-        is_quick = bool(record.ranking and record.ranking.recommendation == Recommendation.QUICK_APPLY)
-        is_apply_now = record.status == ScholarshipStatus.APPLY_NOW
-        if not (is_quick or is_apply_now):
-            continue
-        for prompt in record.essay_prompts:
-            try:
-                draft = draft_generator(record, prompt, database=database)
-                if draft.id is not None:
-                    draft_ids.append(draft.id)
-            except Exception as exc:
-                message = f"{record.name}: draft generation failed safely: {exc}"
-                errors.append(message)
+    records = database.list_scholarships()
+    actionable = [item for item in records if item.status in {
+        ScholarshipStatus.APPLY_NOW, ScholarshipStatus.QUICK_APPLY, ScholarshipStatus.MAYBE,
+    }]
+    output = Path(output_dir)
+    packet_dir = output / "application_packets"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    for stale_packet in packet_dir.glob("*.md"):
+        stale_packet.unlink()
+    packet_paths = [export_application_packet(item, database.list_drafts(), packet_dir) for item in actionable]
+    prompts_found = sum(len(item.essay_prompts) for item in actionable)
+    no_prompt = sum(1 for item in actionable if not item.essay_prompts)
+
+    top_apply = sorted(
+        (item for item in records if item.status == ScholarshipStatus.APPLY_NOW and item.essay_prompts),
+        key=lambda item: item.ranking.total_score if item.ranking else 0,
+        reverse=True,
+    )[:10]
+    llm = build_llm()
+    allow_drafting = llm.enabled or draft_generator is not generate_and_save_draft
+    skipped_sensitive = 0
+    llm_failures = 0
+    if allow_drafting:
+        for record in top_apply:
+            for prompt in record.essay_prompts:
+                lowered = prompt.lower()
+                if any(term in lowered for term in ("immigration", "family hardship", "family income", "exact service hours")):
+                    skipped_sensitive += 1
+                    continue
+                try:
+                    kwargs = {"database": database}
+                    if draft_generator is generate_and_save_draft:
+                        kwargs["llm"] = llm
+                        kwargs["require_llm"] = True
+                    draft = draft_generator(record, prompt, **kwargs)
+                    if draft.id is not None:
+                        draft_ids.append(draft.id)
+                except Exception as exc:
+                    llm_failures += 1
+                    message = f"{record.name}: LLM draft generation failed safely: {exc}"
+                    errors.append(message)
 
     records = database.list_scholarships()
     drafts = database.list_drafts()
     quick_ready = sum(
         1 for item in records
-        if item.no_essay_quick_apply
-        or (item.ranking and item.ranking.recommendation == Recommendation.QUICK_APPLY)
+        if item.status == ScholarshipStatus.QUICK_APPLY
     )
     apply_ready = sum(1 for item in records if item.status == ScholarshipStatus.APPLY_NOW)
     manual_statuses = {
@@ -146,8 +179,13 @@ def run_autopilot(
         apply_now_ready=apply_ready,
         blocked_manual=blocked_manual,
         errors=len(errors),
+        prompts_found=prompts_found,
+        prompts_not_found=no_prompt,
+        packets_generated=len(packet_paths),
+        drafts_skipped_no_prompt=no_prompt,
+        drafts_skipped_sensitive_input=skipped_sensitive,
+        drafts_failed_llm=llm_failures,
     )
-    output = Path(output_dir)
     placeholder = (output / "latest_autopilot_summary.md").resolve()
     result = AutopilotResult(
         started_at=started,

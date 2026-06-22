@@ -190,8 +190,17 @@ def export_application_packet(
     related = [draft for draft in drafts if draft.scholarship_id == scholarship.id]
     ranking = scholarship.ranking
     explanations = "\n".join(f"- {reason}" for reason in ranking.explanation) if ranking else "- Not ranked."
-    prompts = "\n".join(f"- {prompt}" for prompt in scholarship.essay_prompts) or "- None extracted."
+    prompts = "\n".join(f"- {prompt}" for prompt in scholarship.essay_prompts) or "- No essay prompt found on public page."
     documents = "\n".join(f"- [ ] {item}" for item in scholarship.required_documents) or "- None extracted."
+    missing_values = [
+        label for missing, label in (
+            (scholarship.amount is None, "Award amount"),
+            (scholarship.deadline is None, "Deadline"),
+            (not scholarship.eligibility, "Eligibility details"),
+            (scholarship.application_url is None, "Direct application URL"),
+        ) if missing
+    ]
+    missing_text = "\n".join(f"- {value}" for value in missing_values) or "- None identified."
     draft_links = "\n".join(f"- {draft.prompt}: `{draft.path}` ({draft.status.value})" for draft in related) or "- None generated."
     draft_details = []
     for draft in related:
@@ -216,10 +225,26 @@ def export_application_packet(
 - Fit score: {f'{ranking.total_score:.1f}/100' if ranking else 'Unranked'}
 - Application: {str(scholarship.application_url or 'Unknown')}
 - Source: {str(scholarship.source_url or 'Unknown')}
+- Queue: {scholarship.status.value.replace('_', ' ').title()}
+- Candidate type: {scholarship.candidate_type.value}
+- Confidence: {scholarship.confidence_score:.0f}/100
+- Recommendation: {('Apply' if scholarship.status in {ScholarshipStatus.APPLY_NOW, ScholarshipStatus.QUICK_APPLY} else 'Maybe apply' if scholarship.status in {ScholarshipStatus.MAYBE, ScholarshipStatus.MANUAL_REVIEW} else 'Skip')}
+- Manual login likely needed: {'Yes' if scholarship.application_url else 'Unknown — no application URL extracted'}
+- Essay prompt present: {'Yes' if scholarship.essay_prompts else 'No'}
+- AI draft available: {'Yes' if related else 'No'}
+- Suggested answer angle: {(related[0].story_angle if related else 'Use the strongest verified profile story matching the prompt' if scholarship.essay_prompts else 'Not applicable — no prompt found')}
+- Estimated effort: {scholarship.estimated_time}
+- Ease score: {scholarship.ease_score:.0f}/100
+- Ease factors: {', '.join(scholarship.ease_reasons) or 'None recorded'}
+- Blockers: {', '.join(scholarship.ease_blockers) or 'None identified'}
 
 ## Ranking reasons
 
 {explanations}
+
+## Confidence reasons
+
+{chr(10).join(f'- {reason}' for reason in scholarship.confidence_reasons) or '- None recorded.'}
 
 ## Eligibility
 
@@ -232,6 +257,18 @@ def export_application_packet(
 ## Essay prompts
 
 {prompts}
+
+## Missing information
+
+{missing_text}
+
+## Risk flags
+
+{chr(10).join(f'- {value}' for value in ranking.hard_conflicts) if ranking and ranking.hard_conflicts else '- Human review and source verification remain required.'}
+
+## Next action
+
+- {('Open the direct application and verify current requirements.' if scholarship.status in {ScholarshipStatus.APPLY_NOW, ScholarshipStatus.QUICK_APPLY} else 'Verify missing details and decide whether to promote or skip this opportunity.')}
 
 ## Draft files
 

@@ -41,7 +41,7 @@ fields:
     labels: [texas resident, texas residency, resident of texas]
   essay:
     profile_key: essay
-    labels: [essay, essay response, personal statement, short answer, response]
+    labels: [essay, essay response, personal statement, short answer, response, why do you deserve, career goals, leadership, community service, financial need, additional information]
   linkedin:
     profile_key: linkedin
     labels: [linkedin, linkedin url, linkedin profile]

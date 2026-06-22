@@ -134,6 +134,29 @@ class ScholarshipStatus(StrEnum):
     MANUAL_REVIEW = "manual_review"
     BLOCKED_SOURCE = "blocked_source"
     NEEDS_EDIT = "needs_edit"
+    QUICK_APPLY = "quick_apply"
+    JUNK_RESEARCH = "junk_research"
+
+
+class CandidateType(StrEnum):
+    DIRECT_APPLICATION = "Direct Scholarship Application"
+    DETAIL_PAGE = "Scholarship Detail Page"
+    DIRECTORY_LIST = "Scholarship Directory/List Page"
+    FINANCIAL_AID_ADMISSIONS = "University Financial Aid / Admissions Page"
+    BLOG_ARTICLE_GUIDE = "Blog / Article / Guide"
+    VIDEO_SOCIAL_NEWS = "Video / Social / News"
+    OTHER_SCHOOL_ONLY = "Other School Only"
+    GRADUATE_ONLY = "Graduate Only"
+    NOT_A_SCHOLARSHIP = "Not A Scholarship"
+    UNKNOWN_REVIEW = "Unknown / Needs Manual Review"
+
+
+class UserStatus(StrEnum):
+    APPROVED_FOR_APPLY = "approved_for_apply"
+    REJECTED = "rejected"
+    JUNK = "junk"
+    QUICK_APPLY = "quick_apply"
+    NEEDS_MORE_INFO = "needs_more_info"
 
 
 class Recommendation(StrEnum):
@@ -172,6 +195,17 @@ class Scholarship(StrictModel):
     pre_approved_submit: bool = False
     approved_autofill: bool = False
     notes: str | None = None
+    candidate_type: CandidateType = CandidateType.UNKNOWN_REVIEW
+    confidence_score: float = Field(default=0, ge=0, le=100)
+    confidence_reasons: list[str] = Field(default_factory=list)
+    why_not_apply_now: list[str] = Field(default_factory=list)
+    user_status: UserStatus | None = None
+    user_notes: str | None = None
+    reviewed_at: datetime | None = None
+    ease_score: float = Field(default=0, ge=0, le=100)
+    ease_reasons: list[str] = Field(default_factory=list)
+    ease_blockers: list[str] = Field(default_factory=list)
+    estimated_time: str = "30+ min"
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -202,6 +236,14 @@ class DraftStatus(StrEnum):
     DRAFT = "draft"
     READY_TO_REVIEW = "ready_to_review"
     NEEDS_USER_INPUT = "needs_user_input"
+    APPROVED_AUTOFILL = "approved_autofill"
+    NEEDS_REGENERATION = "needs_regeneration"
+    DRAFT_FAILED = "draft_failed"
+
+
+class DraftSource(StrEnum):
+    AI = "ai"
+    TEMPLATE_FALLBACK = "template_fallback"
 
 
 class DraftRecord(StrictModel):
@@ -216,6 +258,8 @@ class DraftRecord(StrictModel):
     claims_to_verify: list[str] = Field(default_factory=list)
     missing_user_input: list[str] = Field(default_factory=list)
     why_angle_fits: str
+    generation_source: DraftSource = DraftSource.TEMPLATE_FALLBACK
+    generation_error: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

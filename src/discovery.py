@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -13,13 +14,16 @@ from pydantic import Field
 from src.db import ScholarshipDatabase
 from src.export import DEFAULT_EXPORT_DIR
 from src.extract import extract_scholarship_html
-from src.models import Profile, Recommendation, Scholarship, ScholarshipStatus, StrictModel
+from src.models import Profile, Scholarship, StrictModel
 from src.policy import AccessMode, SourceCatalog, SourceDefinition, load_source_catalog
 from src.ranker import rank_scholarship
 from src.source_adapters.base import SafeFetcher
 from src.source_adapters.public import PublicSourceAdapter
 from src.source_adapters.rss import RSSSourceAdapter
 from src.source_adapters.search import SearchProvider, build_search_provider
+from src.config import load_environment
+from src.profile import load_profile
+from src.quality import classify_candidate, queue_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +49,12 @@ class DiscoveryStats(StrictModel):
     duplicates: int = 0
     skipped_blocked: int = 0
     errors: int = 0
+    queries_attempted: int = 0
+    search_results: int = 0
+    urls_fetched: int = 0
+    urls_blocked: int = 0
+    extraction_successes: int = 0
+    extraction_failures: int = 0
 
 
 class DiscoveryResult(StrictModel):
@@ -79,18 +89,6 @@ def update_source_enabled(path: str | Path, source_name: str, enabled: bool) -> 
     source_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-def _queue_status(scholarship: Scholarship, recommendation: Recommendation) -> ScholarshipStatus:
-    if recommendation == Recommendation.SKIP:
-        return ScholarshipStatus.SKIPPED
-    if scholarship.deadline is None or scholarship.application_url is None:
-        return ScholarshipStatus.MANUAL_REVIEW
-    if recommendation == Recommendation.APPLY:
-        return ScholarshipStatus.APPLY_NOW
-    if recommendation == Recommendation.MAYBE:
-        return ScholarshipStatus.MAYBE
-    return ScholarshipStatus.NEW
-
-
 def _persist_candidate(
     scholarship: Scholarship,
     *,
@@ -99,8 +97,9 @@ def _persist_candidate(
     database: ScholarshipDatabase,
     profile: Profile,
 ) -> tuple[int, bool]:
+    classified = classify_candidate(scholarship)
     scholarship_id, is_new = database.add_or_merge_scholarship(
-        scholarship,
+        classified,
         source_name=source_name,
         source_url=source_url,
     )
@@ -111,7 +110,7 @@ def _persist_candidate(
     database.save_ranking(ranking)
     database.update_scholarship_status(
         scholarship_id,
-        _queue_status(record, ranking.recommendation).value,
+        queue_status(record, ranking).value,
     )
     return scholarship_id, is_new
 
@@ -201,17 +200,29 @@ def run_discovery(
 
     if provider.enabled:
         for query in queries.queries:
+            stats = stats.model_copy(update={"queries_attempted": stats.queries_attempted + 1})
             try:
                 results = provider.search(query.query, query.max_results)
+                stats = stats.model_copy(update={"search_results": stats.search_results + len(results)})
             except Exception as exc:
                 errors.append(f"Search query {query.query!r}: {exc}")
                 stats = stats.model_copy(update={"errors": stats.errors + 1})
                 continue
             for result in results:
-                landing = fetcher.fetch_unknown_landing(result.url)
+                try:
+                    landing = fetcher.fetch_unknown_landing(result.url)
+                except Exception as exc:
+                    stats = stats.model_copy(update={
+                        "extraction_failures": stats.extraction_failures + 1,
+                        "errors": stats.errors + 1,
+                    })
+                    errors.append(f"Search result {result.url}: fetch failed safely: {exc}")
+                    continue
                 if not landing.allowed or "html" not in landing.content_type:
+                    stats = stats.model_copy(update={"urls_blocked": stats.urls_blocked + 1})
                     warnings.append(f"Search result {result.url}: {landing.reason or 'non-HTML landing page'}")
                     continue
+                stats = stats.model_copy(update={"urls_fetched": stats.urls_fetched + 1})
                 try:
                     scholarship = extract_scholarship_html(
                         landing.text,
@@ -219,11 +230,18 @@ def run_discovery(
                         source_category=query.category,
                     )
                     persist([scholarship], f"search:{provider.name}:{query.category}", result.url)
+                    stats = stats.model_copy(update={"extraction_successes": stats.extraction_successes + 1})
                 except ValueError as exc:
+                    stats = stats.model_copy(update={"extraction_failures": stats.extraction_failures + 1})
                     warnings.append(f"Search result {result.url}: {exc}")
     else:
         warnings.append(provider.status)
 
+    if stats.found < 20:
+        warnings.append(
+            f"Low discovery count ({stats.found} candidates): provider may be disabled, queries may have returned "
+            "few results, pages may be blocked/non-HTML, extraction may have failed, or duplicates may dominate."
+        )
     result = DiscoveryResult(
         started_at=started,
         finished_at=datetime.now(),
@@ -235,6 +253,7 @@ def run_discovery(
     )
     database.save_discovery_run(result.model_dump(mode="json"))
     write_discovery_summary(result, database, exports_dir)
+    write_discovery_diagnostics(result, exports_dir)
     return result
 
 
@@ -280,3 +299,48 @@ def write_discovery_summary(
     lines.extend(f"- {error}" for error in result.errors or ["None."])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def write_discovery_diagnostics(result: DiscoveryResult, output_dir: str | Path = DEFAULT_EXPORT_DIR) -> Path:
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = (directory / "latest_discovery_diagnostics.md").resolve()
+    stats = result.stats
+    lines = [
+        "# Latest Discovery Diagnostics", "",
+        f"- Search provider status: {result.search_status}",
+        f"- Queries attempted: {stats.queries_attempted}",
+        f"- Search results: {stats.search_results}",
+        f"- URLs fetched: {stats.urls_fetched}",
+        f"- URLs blocked: {stats.urls_blocked}",
+        f"- Extraction successes: {stats.extraction_successes}",
+        f"- Extraction failures: {stats.extraction_failures}",
+        f"- Duplicates removed: {stats.duplicates}",
+        f"- Scholarships added: {stats.new}",
+        "- Drafts generated: reported by latest_autopilot_summary.md", "",
+        "## Low-count explanation", "",
+        (f"Fewer than 20 candidates were found. {next((w for w in result.warnings if w.startswith('Low discovery count')), '')}"
+         if stats.found < 20 else "At least 20 candidates were found."), "", "## Errors", "",
+        *(f"- {value}" for value in result.errors or ["None."]),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Scholarship discovery")
+    parser.add_argument("command", choices=("run",))
+    parser.parse_args(argv)
+    load_environment()
+    database_path = Path(os.getenv("SCHOLARSHIP_DB_PATH", "data/scholarships.db"))
+    database = ScholarshipDatabase(database_path if database_path.is_absolute() else ROOT / database_path)
+    profile_path = ROOT / "data" / "profile.yaml"
+    profile = load_profile(profile_path if profile_path.exists() else ROOT / "data" / "profile.example.yaml")
+    result = run_discovery(database, profile)
+    print(f"Discovery complete: found={result.stats.found} new={result.stats.new} errors={result.stats.errors}")
+    print(f"Diagnostics: {(DEFAULT_EXPORT_DIR / 'latest_discovery_diagnostics.md').resolve()}")
+    return 0 if result.stats.errors == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

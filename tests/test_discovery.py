@@ -80,7 +80,7 @@ sources:
 def test_search_query_catalog_loads_profile_queries() -> None:
     catalog = load_search_queries(ROOT / "data" / "search_queries.yaml")
 
-    assert len(catalog.queries) == 17
+    assert len(catalog.queries) >= 75
     assert catalog.queries[0].priority >= catalog.queries[-1].priority
     assert any(item.query == "UTA scholarships computer science" for item in catalog.queries)
     assert all(item.max_results > 0 and item.notes for item in catalog.queries)

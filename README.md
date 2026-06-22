@@ -2,7 +2,7 @@
 
 A local-first scholarship tracker for Rafi. It provides validated profile data, SQLite persistence, policy-gated manual/public imports, deterministic extraction and drafting, transparent ranking, and a Streamlit review dashboard.
 
-An optional LLM provider remains deferred. Playwright autofill is review-first and fail-closed; the dashboard never enables submit mode and never automates university login.
+OpenAI drafting and Tavily discovery are optional and fall back safely when keys are absent. Playwright autofill is review-first and fail-closed; the dashboard never enables submit mode and never automates university login.
 
 ## Safety defaults
 
@@ -43,6 +43,19 @@ cp data/profile.example.yaml data/profile.yaml
 
 Then edit only verified facts. Document paths are resolved relative to the profile YAML file.
 
+Check provider configuration without printing secrets:
+
+```bash
+python -m src.healthcheck
+python -m src.search diagnose
+```
+
+Run the full discovery, ranking, drafting, diagnostics, and queue export pipeline:
+
+```bash
+python -m src.autopilot run
+```
+
 Draft generation also requires these private local context paths:
 
 ```text
@@ -79,7 +92,7 @@ Then use these exact dashboard actions:
 1. Manual import: open **Import scholarships → Paste opportunity text**, paste one opportunity, then click **Extract and import**.
 2. Mav ScholarShop: log in yourself, copy one opportunity, open **Mav ScholarShop manual check**, paste it, then click **Parse, rank, and import**.
 3. Drafts: open a scholarship's **Essay drafts**, then click **Generate draft**. Review **Facts used** and **Missing user input**.
-4. Safe autofill: ensure the application URL is covered by a reviewed source in `data/sources.yaml`, then click **Open and autofill safely**. Complete login yourself if requested and stop for CAPTCHA/2FA. Review the log, screenshot, and manual fields. This dashboard button never submits.
+4. Safe autofill: mark the draft ready, click **Approve draft for autofill**, approve the scholarship in **Approval Queue**, and ensure the application URL is covered by a reviewed source in `data/sources.yaml`. Then click **Open and autofill safely**. Complete login yourself if requested and stop for CAPTCHA/2FA. Review the log, screenshot, and manual fields. This dashboard button never submits.
 5. Exports: open sidebar **Exports** and select the tracker, weekly list, draft packet, quick-apply queue, or Mav checklist. Use **Export application packet** on a scholarship card for its complete packet.
 
 Use **Import scholarships** at the top of the dashboard to paste one complete opportunity or fetch an approved public URL. Manual parsing extracts amounts, deadlines, eligibility flags, documents, prompts, restrictions, and links without an LLM. Imported records are saved and ranked immediately.

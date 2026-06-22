@@ -53,10 +53,12 @@ def test_autopilot_orders_pipeline_and_generates_apply_drafts(tmp_path: Path) ->
         )
         db.save_ranking(_ranking(apply_id, Recommendation.APPLY, 88))
         quick_id = db.add_scholarship(
-            Scholarship(
-                name="No Essay Quick Drawing",
-                amount=500,
-                deadline="2027-11-01",
+                Scholarship(
+                    name="No Essay Quick Drawing",
+                    amount=500,
+                    deadline="2027-11-01",
+                    application_url="https://bold.org/scholarships/quick-drawing",
+                    source_url="https://bold.org/scholarships/quick-drawing",
                 no_essay_quick_apply=True,
                 recommendation_required=False,
                 fafsa_required=False,

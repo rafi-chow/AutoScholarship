@@ -47,7 +47,8 @@ class HTTPSearchProvider(SearchProvider):
         if self.name == "tavily":
             response = self.session.post(
                 "https://api.tavily.com/search",
-                json={"api_key": self.api_key, "query": query, "max_results": max_results},
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={"query": query, "max_results": max_results},
                 timeout=20,
             )
             response.raise_for_status()
@@ -82,7 +83,13 @@ def build_search_provider(
 ) -> SearchProvider:
     values = env or os.environ
     name = values.get("SEARCH_PROVIDER", "none").strip().lower()
-    api_key = values.get("SEARCH_API_KEY", "").strip()
+    api_key = (
+        values.get("TAVILY_API_KEY", "").strip()
+        if name == "tavily"
+        else values.get("SEARCH_API_KEY", "").strip()
+    )
+    if name == "tavily" and not api_key:
+        api_key = values.get("SEARCH_API_KEY", "").strip()
     if name == "none" or not api_key:
         provider = SearchProvider()
         provider.status = "Search API not configured. Add SEARCH_PROVIDER and SEARCH_API_KEY to .env; curated/RSS discovery still works."

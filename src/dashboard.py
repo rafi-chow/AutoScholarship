@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from datetime import date
 from hashlib import sha1
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from src.autopilot import run_autopilot
 from src.autofill import AutofillReport, autofill_application, latest_autofill_report
 from src.db import ScholarshipDatabase
 from src.discovery import run_discovery, update_source_enabled
-from src.drafter import DraftContextError, generate_and_save_draft, slugify
+from src.drafter import DraftContextError, generate_and_save_draft, generate_for_scholarship, slugify
 from src.export import (
     build_weekly_action_list,
     export_application_packet,
@@ -29,13 +30,16 @@ from src.export import (
 )
 from src.finder import SourceFetchError, SourcePolicyError, import_manual_text, import_public_url
 from src.mav_import import import_mav_opportunity
-from src.models import DraftRecord, DraftStatus, Recommendation, ScholarshipRecord, ScholarshipStatus
+from src.models import CandidateType, DraftRecord, DraftSource, DraftStatus, Recommendation, ScholarshipRecord, ScholarshipStatus, UserStatus
 from src.policy import AccessMode, SourceDefinition, load_source_catalog, source_matches_url
 from src.profile import ProfileLoadError, load_profile
 from src.source_adapters.search import build_search_provider
+from src.config import load_environment, provider_status
+from src.llm import build_llm
 
 
 ROOT = Path(__file__).resolve().parents[1]
+load_environment(ROOT / ".env")
 PROFILE_PATH = ROOT / "data" / "profile.yaml"
 EXAMPLE_PROFILE_PATH = ROOT / "data" / "profile.example.yaml"
 DEFAULT_DB_PATH = ROOT / os.getenv("SCHOLARSHIP_DB_PATH", "data/scholarships.db")
@@ -43,21 +47,91 @@ SOURCES_PATH = ROOT / "data" / "sources.yaml"
 EXPORTS_PATH = ROOT / "exports"
 
 TAB_CONFIG = [
+    ("Home", None, None),
     ("Autopilot", None, None),
     ("Approval Queue", None, None),
+    ("Review Queue", None, None),
     ("Discovery", None, None),
     ("Sources", None, None),
     ("New scholarships", ScholarshipStatus.NEW, None),
-    ("Quick apply / no essay", None, Recommendation.QUICK_APPLY),
+    ("Quick Apply", ScholarshipStatus.QUICK_APPLY, None),
     ("Apply now", ScholarshipStatus.APPLY_NOW, None),
     ("Maybe", ScholarshipStatus.MAYBE, None),
     ("Needs manual review", ScholarshipStatus.MANUAL_REVIEW, None),
+    ("Junk / Research Leads", ScholarshipStatus.JUNK_RESEARCH, None),
+    ("Packets Generated", None, None),
+    ("Prompts Found", None, None),
+    ("No Prompt Found", None, None),
     ("Drafts ready", ScholarshipStatus.DRAFTS_READY, None),
     ("Needs documents", ScholarshipStatus.NEEDS_DOCUMENTS, None),
     ("Skipped", ScholarshipStatus.SKIPPED, None),
     ("Blocked/manual-only source", ScholarshipStatus.BLOCKED_SOURCE, None),
     ("Mav ScholarShop manual check", ScholarshipStatus.MAV_MANUAL_CHECK, None),
 ]
+
+
+def _draft_label(draft: DraftRecord | None) -> str:
+    if draft is None: return "No Draft Yet"
+    if draft.status == DraftStatus.DRAFT_FAILED: return "Draft Failed"
+    if draft.generation_source == DraftSource.AI: return "AI Draft"
+    if draft.status == DraftStatus.NEEDS_REGENERATION: return "Needs Regeneration"
+    return "Template Fallback"
+
+
+def _best_card(record: ScholarshipRecord, database: ScholarshipDatabase, *, key: str) -> None:
+    drafts = [d for d in database.list_drafts() if d.scholarship_id == record.id]
+    draft = drafts[0] if drafts else None
+    with st.container(border=True):
+        st.subheader(record.name)
+        cols = st.columns(5)
+        cols[0].metric("Ease", f"{record.ease_score:.0f}/100")
+        cols[1].metric("Time", record.estimated_time)
+        cols[2].metric("Value", f"${record.amount:,.0f}" if record.amount is not None else "Unknown")
+        cols[3].metric("Fit", f"{record.ranking.total_score:.0f}/100" if record.ranking else "Unranked")
+        cols[4].metric("Deadline", record.deadline.isoformat() if record.deadline else "Unknown")
+        st.caption(f"{record.status.value.replace('_',' ').title()} · {_draft_label(draft)} · Prompt: {'Yes' if record.essay_prompts else 'No'}")
+        st.write("**Why easy/hard:**", "; ".join([*record.ease_reasons, *record.ease_blockers]) or "No factors recorded")
+        if record.application_url: st.link_button("Open application — next action", str(record.application_url))
+        else: st.warning("Next action: find or verify the direct application URL.")
+        with st.expander("Details"):
+            st.write("Eligibility:", "; ".join(record.eligibility) or "Unknown")
+            st.write("Documents:", ", ".join(record.required_documents) or "None extracted")
+
+
+def _home_tab(records: list[ScholarshipRecord], drafts: list[DraftRecord], database: ScholarshipDatabase) -> None:
+    st.header("Best Next Applications")
+    sort_by = st.selectbox("Sort", ["Easiest first", "Highest fit score", "Highest award", "Deadline soon"])
+    filter_cols = st.columns(4)
+    prompt_only = filter_cols[0].checkbox("Prompt found")
+    quick_only = filter_cols[1].checkbox("Quick apply / no essay")
+    hide_fafsa = filter_cols[2].checkbox("Hide FAFSA-required", value=True)
+    hide_rec = filter_cols[3].checkbox("Hide recommendation-required", value=True)
+    candidates = [r for r in records if r.status not in {ScholarshipStatus.JUNK_RESEARCH, ScholarshipStatus.SKIPPED} and r.candidate_type not in {CandidateType.OTHER_SCHOOL_ONLY, CandidateType.GRADUATE_ONLY}]
+    if prompt_only: candidates = [r for r in candidates if r.essay_prompts]
+    if quick_only: candidates = [r for r in candidates if r.no_essay_quick_apply or r.status == ScholarshipStatus.QUICK_APPLY]
+    if hide_fafsa: candidates = [r for r in candidates if r.fafsa_required is not True]
+    if hide_rec: candidates = [r for r in candidates if r.recommendation_required is not True]
+    keys = {
+        "Easiest first": lambda r: (-r.ease_score, -(r.ranking.total_score if r.ranking else 0)),
+        "Highest fit score": lambda r: (-(r.ranking.total_score if r.ranking else 0), -r.ease_score),
+        "Highest award": lambda r: (-(r.amount or 0), -r.ease_score),
+        "Deadline soon": lambda r: (r.deadline or date.max, -r.ease_score),
+    }
+    candidates.sort(key=keys[sort_by])
+    for record in candidates[:5]: _best_card(record, database, key=f"best-{record.id}")
+    sections = (
+        ("Quick Apply / No Essay", [r for r in candidates if r.no_essay_quick_apply or r.status == ScholarshipStatus.QUICK_APPLY]),
+        ("AI Drafts Ready", [r for r in candidates if any(d.scholarship_id == r.id and d.generation_source == DraftSource.AI for d in drafts)]),
+        ("Prompts Found But No Draft", [r for r in candidates if r.essay_prompts and not any(d.scholarship_id == r.id for d in drafts)]),
+        ("Needs Your Review", [r for r in candidates if r.status in {ScholarshipStatus.MAYBE, ScholarshipStatus.MANUAL_REVIEW}]),
+        ("Packets Generated", [r for r in candidates if (EXPORTS_PATH / "application_packets" / f"{slugify(r.name, fallback='scholarship')}-application-packet.md").exists()]),
+    )
+    for title, items in sections:
+        st.subheader(title); st.caption(f"{len(items)} candidate(s)")
+        with st.expander(f"View {title.lower()}"):
+            for item in items[:10]: st.write(f"- {item.name} — ease {item.ease_score:.0f}/100")
+    with st.expander("Junk / Research Leads (hidden by default)"):
+        st.caption(f"{sum(r.status == ScholarshipStatus.JUNK_RESEARCH for r in records)} lead(s); use the dedicated tab to audit.")
 
 
 def _draft_prompt_controls(
@@ -80,7 +154,7 @@ def _draft_prompt_controls(
         except (ValueError, OSError, DraftContextError) as exc:
             st.error(f"Draft generation stopped: {exc}")
     if draft:
-        st.caption(f"Draft status: {draft.status.value} · {draft.path}")
+        st.caption(f"{_draft_label(draft)} · {draft.status.value} · {draft.path}")
         view_column, ready_column, input_column = st.columns(3)
         if view_column.button("View draft", key=f"view-{key}"):
             st.session_state[f"show-{key}"] = not st.session_state.get(f"show-{key}", False)
@@ -147,6 +221,8 @@ def _record_card(
             ScholarshipStatus.MANUAL_REVIEW: "Verify missing deadline, application URL, or extraction details.",
             ScholarshipStatus.BLOCKED_SOURCE: "Use manual import only if source policy permits it.",
             ScholarshipStatus.NEEDS_EDIT: "Revise the draft or application details before approval.",
+            ScholarshipStatus.QUICK_APPLY: "Verify the application and complete this low-effort opportunity.",
+            ScholarshipStatus.JUNK_RESEARCH: "Audit this research lead; promote only if it resolves to a direct award.",
         }[record.status]
         st.info(f"Next action: {next_action}")
         with st.expander("Essay drafts"):
@@ -169,6 +245,14 @@ def _record_card(
                     key_prefix=f"{key_prefix}-custom",
                 )
         _autofill_controls(record, database, key_prefix=key_prefix)
+        if record.essay_prompts and st.button("Generate drafts for selected scholarship", key=f"selected-drafts-{key_prefix}-{record.id}"):
+            generated = 0
+            for prompt in record.essay_prompts:
+                if any(term in prompt.lower() for term in ("immigration", "family hardship", "family income", "exact service hours")):
+                    continue
+                generate_and_save_draft(record, prompt, database=database)
+                generated += 1
+            st.success(f"Generated {generated} draft(s).")
         if st.button("Export application packet", key=f"packet-{key_prefix}-{record.id}"):
             path = export_application_packet(record, database.list_drafts(), EXPORTS_PATH)
             st.success(f"Application packet saved to {path}")
@@ -191,7 +275,7 @@ def _draft_answer_for_autofill(record: ScholarshipRecord, database: ScholarshipD
     if record.id is None:
         return None
     drafts = [draft for draft in database.list_drafts() if draft.scholarship_id == record.id]
-    preferred = next((draft for draft in drafts if draft.status == DraftStatus.READY_TO_REVIEW), None)
+    preferred = next((draft for draft in drafts if draft.status == DraftStatus.APPROVED_AUTOFILL), None)
     if preferred is None:
         return None
     try:
@@ -273,8 +357,14 @@ def _autofill_controls(
 def _draft_review_card(draft: DraftRecord, database: ScholarshipDatabase, *, key_prefix: str) -> None:
     with st.container(border=True):
         st.subheader(draft.scholarship_name)
+        st.info(f"Draft source: {_draft_label(draft)}") if draft.generation_source == DraftSource.AI else st.warning("Template fallback: this is not an AI-generated draft.")
         st.write(f"**Prompt:** {draft.prompt}")
         st.code(str(draft.path), language=None)
+        st.caption(f"Created {draft.created_at.isoformat()} · Updated {draft.updated_at.isoformat()} · Status {draft.status.value}")
+        content = draft.path.read_text(encoding="utf-8") if draft.path.is_file() else "[Draft file unavailable]"
+        preview = _draft_preview(draft)
+        st.write("**Readable preview:**", preview)
+        st.text_area("Copy draft content", value=content, height=260, key=f"copy-draft-{key_prefix}-{draft.id}")
         st.write("**Facts used:**")
         for fact in draft.facts_used:
             st.write(f"- {fact}")
@@ -284,6 +374,20 @@ def _draft_review_card(draft: DraftRecord, database: ScholarshipDatabase, *, key
                 st.warning(item)
         else:
             st.write("None currently identified.")
+        st.write("**Safety checklist:**")
+        checks = {
+            "No low-income claim": not bool(re.search(r"\b(?:i am|my family is) (?:a )?low[- ]income\b", content, re.I)),
+            "No FAFSA completion claim": not bool(re.search(r"\b(?:i|we) (?:have )?completed (?:the )?fafsa\b", content, re.I)),
+            "No first-generation claim": not bool(re.search(r"\bi am (?:a )?first[- ]generation\b", content, re.I)),
+            "No fake service hours": not bool(re.search(r"\b\d+ (?:service )?hours\b", content, re.I)),
+            "No fake Mission Arlington details": not bool(re.search(r"at mission arlington, i (?:distributed|organized|delivered|served|managed)", content, re.I)),
+            "No proprietary Bell details": "proprietary bell" not in content.lower() and "internal bell" not in content.lower(),
+            "Facts used listed": bool(draft.facts_used),
+            "Missing info listed": "## Missing user input" in content,
+        }
+        for label, passed in checks.items():
+            st.write(f"{'✅' if passed else '⚠️'} {label}")
+        if not all(checks.values()): st.warning("One or more draft quality checks need human review.")
         next_action = (
             "Supply and verify the missing details before editing the answer."
             if draft.status == DraftStatus.NEEDS_USER_INPUT
@@ -291,7 +395,7 @@ def _draft_review_card(draft: DraftRecord, database: ScholarshipDatabase, *, key
         )
         st.info(f"Next action: {next_action}")
         key = f"draft-review-{key_prefix}-{draft.id}"
-        view_column, ready_column, input_column = st.columns(3)
+        view_column, ready_column, input_column, approve_column, regen_column = st.columns(5)
         if view_column.button("View draft", key=f"view-{key}"):
             st.session_state[f"show-{key}"] = not st.session_state.get(f"show-{key}", False)
         if ready_column.button("Mark as ready to review", key=f"ready-{key}"):
@@ -300,6 +404,19 @@ def _draft_review_card(draft: DraftRecord, database: ScholarshipDatabase, *, key
         if input_column.button("Mark as needs user input", key=f"input-{key}"):
             database.update_draft_status(draft.id, DraftStatus.NEEDS_USER_INPUT)
             st.warning("Marked as needing user input.")
+        if approve_column.button("Approve draft for autofill", key=f"approve-draft-{key}"):
+            if draft.missing_user_input:
+                st.error("Resolve missing user input before approving this draft.")
+            else:
+                draft = database.update_draft_status(draft.id, DraftStatus.APPROVED_AUTOFILL)
+                st.success("Draft approved for essay autofill.")
+        if regen_column.button("Regenerate with AI", key=f"regen-ai-{key}", disabled=draft.generation_source == DraftSource.AI):
+            record = database.get_scholarship(draft.scholarship_id)
+            if record:
+                llm = build_llm()
+                generate_and_save_draft(record, draft.prompt, database=database, llm=llm, require_llm=True)
+                st.success("Fallback draft replaced with an AI draft.")
+                st.rerun()
         if st.session_state.get(f"show-{key}"):
             try:
                 st.markdown(draft.path.read_text(encoding="utf-8"))
@@ -506,6 +623,31 @@ def _autopilot_tab(database: ScholarshipDatabase, profile) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Autopilot stopped safely: {exc}")
+    if st.button("Generate drafts for top 10 Apply Now", key="draft-top-10"):
+        candidates = [r for r in database.list_scholarships(ScholarshipStatus.APPLY_NOW.value) if r.essay_prompts][:10]
+        generated = 0
+        for record in candidates:
+            for prompt in record.essay_prompts:
+                if not any(term in prompt.lower() for term in ("immigration", "family hardship", "family income", "exact service hours")):
+                    generate_and_save_draft(record, prompt, database=database)
+                    generated += 1
+        st.success(f"Generated {generated} draft(s) for {len(candidates)} scholarship(s).")
+    ai_cols = st.columns(3)
+    if ai_cols[0].button("Generate AI drafts for top 3 Review Queue candidates"):
+        candidates = [r for r in database.list_scholarships() if r.essay_prompts and r.candidate_type in {CandidateType.DIRECT_APPLICATION, CandidateType.DETAIL_PAGE} and r.status in {ScholarshipStatus.MAYBE, ScholarshipStatus.MANUAL_REVIEW}]
+        candidates.sort(key=lambda r: ((r.ranking.total_score if r.ranking else 0), r.confidence_score), reverse=True)
+        llm = build_llm(); generated = sum(len(generate_for_scholarship(r, database, llm=llm, max_prompts=1, require_llm=True)) for r in candidates[:3])
+        st.success(f"Generated {generated} AI draft(s).")
+    if ai_cols[1].button("Generate AI drafts for all user-approved prompted scholarships"):
+        candidates = [r for r in database.list_scholarships() if r.user_status == UserStatus.APPROVED_FOR_APPLY and r.essay_prompts]
+        llm = build_llm(); generated = sum(len(generate_for_scholarship(r, database, llm=llm, require_llm=True)) for r in candidates)
+        st.success(f"Generated {generated} AI draft(s).")
+    if ai_cols[2].button("Regenerate fallback drafts"):
+        llm = build_llm(); generated = 0
+        for draft in [d for d in database.list_drafts() if d.generation_source == DraftSource.TEMPLATE_FALLBACK][:10]:
+            record = database.get_scholarship(draft.scholarship_id)
+            if record: generated += len(generate_for_scholarship(record, database, llm=llm, max_prompts=1, require_llm=True))
+        st.success(f"Regenerated {generated} fallback draft(s) with AI.")
     if message := st.session_state.pop("autopilot-flash", None):
         st.success(message)
     latest = database.latest_autopilot_run()
@@ -623,6 +765,53 @@ def _approval_queue_tab(records: list[ScholarshipRecord], database: ScholarshipD
         _approval_queue_card(record, database)
 
 
+def _review_queue_tab(records: list[ScholarshipRecord], database: ScholarshipDatabase) -> None:
+    st.subheader("Review Queue")
+    matching = [r for r in records if r.status in {ScholarshipStatus.MAYBE, ScholarshipStatus.MANUAL_REVIEW} or (
+        r.status != ScholarshipStatus.APPLY_NOW and r.candidate_type in {CandidateType.DIRECT_APPLICATION, CandidateType.DETAIL_PAGE}
+    ) or (r.essay_prompts and r.user_status not in {UserStatus.REJECTED, UserStatus.JUNK})]
+    if not matching:
+        _empty_state("Review Queue"); return
+    for record in matching:
+        if record.id is None: continue
+        with st.container(border=True):
+            st.subheader(record.name)
+            st.write(f"**Queue:** {record.status.value.replace('_', ' ').title()} · **Type:** {record.candidate_type.value}")
+            st.write(f"**Score:** {record.ranking.total_score if record.ranking else 'Unranked'} · **Confidence:** {record.confidence_score:.0f}/100")
+            st.write(f"**Amount:** {f'${record.amount:,.0f}' if record.amount is not None else 'Unknown'} · **Deadline:** {record.deadline or 'Unknown'} · **Prompts:** {'Yes' if record.essay_prompts else 'No'}")
+            st.write("**Required documents:**", ", ".join(record.required_documents) or "None extracted")
+            tri = lambda value: "Yes" if value is True else "No" if value is False else "Unknown"
+            st.write(f"**FAFSA:** {tri(record.fafsa_required)} · **Recommendation:** {tri(record.recommendation_required)} · **First-gen:** {tri(record.first_generation_required)} · **Need-only:** {tri(record.need_only)}")
+            st.write("**Why not Apply Now:**", "; ".join(record.why_not_apply_now) or "Already eligible for Apply Now")
+            packet = EXPORTS_PATH / "application_packets" / f"{slugify(record.name, fallback='scholarship')}-application-packet.md"
+            st.write(f"**Packet:** {packet if packet.exists() else 'Not generated'}")
+            notes = st.text_input("Review notes", value=record.user_notes or "", key=f"review-notes-{record.id}")
+            cols = st.columns(6)
+            actions = (
+                ("Mark Eligible / Promote to Apply Queue", UserStatus.APPROVED_FOR_APPLY),
+                ("Mark Quick Apply", UserStatus.QUICK_APPLY),
+                ("Needs More Info", UserStatus.NEEDS_MORE_INFO),
+                ("Mark Not Eligible", UserStatus.REJECTED),
+                ("Mark Junk", UserStatus.JUNK),
+            )
+            for col, (label, value) in zip(cols[:5], actions):
+                if col.button(label, key=f"{value.value}-{record.id}"):
+                    database.update_user_review(record.id, user_status=value.value, user_notes=notes)
+                    st.rerun()
+            if cols[5].button("Generate AI Draft", key=f"review-draft-{record.id}", disabled=not record.essay_prompts):
+                llm = build_llm()
+                if not llm.enabled:
+                    st.error("OpenAI is not configured; no AI draft was generated.")
+                    continue
+                made = generate_for_scholarship(record, database, llm=llm, require_llm=True)
+                st.success(f"Generated {len(made)} draft(s).")
+            links = st.columns(3)
+            if links[0].button("Generate Application Packet", key=f"review-packet-{record.id}"):
+                st.success(f"Saved {export_application_packet(record, database.list_drafts(), EXPORTS_PATH / 'application_packets')}")
+            if record.source_url: links[1].link_button("Open Source URL", str(record.source_url))
+            if record.application_url: links[2].link_button("Open Application URL", str(record.application_url))
+
+
 def _sources_tab(database: ScholarshipDatabase, *, blocked_only: bool = False) -> None:
     catalog = load_source_catalog(SOURCES_PATH)
     states = database.source_states()
@@ -681,6 +870,52 @@ def main() -> None:
     records = database.list_scholarships()
     drafts = database.list_drafts()
 
+    status = provider_status()
+    catalog = load_source_catalog(SOURCES_PATH)
+    real_sources = [s for s in catalog.sources if s.enabled and "example." not in str(s.url)]
+    placeholder_sources = [s for s in catalog.sources if "example." in str(s.url)]
+    latest_auto = database.latest_autopilot_run()
+    latest_discovery = database.latest_discovery_run()
+    st.subheader("System status")
+    status_columns = st.columns(4)
+    status_columns[0].metric("LLM configured", "Yes" if status["llm_configured"] else "No")
+    status_columns[1].metric("Search configured", "Yes" if status["search_configured"] else "No")
+    status_columns[2].metric("Active real sources", len(real_sources))
+    status_columns[3].metric("Placeholder sources", len(placeholder_sources))
+    st.caption(
+        f"Latest autopilot run: {latest_auto['finished_at'] if latest_auto else 'Never'} · "
+        f"Latest errors: {len((latest_auto or latest_discovery or {}).get('errors', []))} · "
+        f"Latest diagnostics: {EXPORTS_PATH / 'latest_discovery_diagnostics.md'}"
+    )
+    queue_columns = st.columns(4)
+    queue_columns[0].metric("Approval Queue", sum(1 for r in records if r.ranking and r.ranking.recommendation in {Recommendation.APPLY, Recommendation.QUICK_APPLY}))
+    queue_columns[1].metric("Quick Apply Queue", sum(1 for r in records if r.no_essay_quick_apply or (r.ranking and r.ranking.recommendation == Recommendation.QUICK_APPLY)))
+    queue_columns[2].metric("Drafts Ready", sum(1 for d in drafts if d.status in {DraftStatus.READY_TO_REVIEW, DraftStatus.APPROVED_AUTOFILL}))
+    queue_columns[3].metric("Needs Manual Review", sum(1 for r in records if r.status == ScholarshipStatus.MANUAL_REVIEW))
+    quality_columns = st.columns(5)
+    quality_columns[0].metric("Total discovered", len(records))
+    quality_columns[1].metric("Direct scholarships", sum(1 for r in records if r.candidate_type in {CandidateType.DIRECT_APPLICATION, CandidateType.DETAIL_PAGE}))
+    quality_columns[2].metric("Directories/lists", sum(1 for r in records if r.candidate_type == CandidateType.DIRECTORY_LIST))
+    quality_columns[3].metric("Junk/research leads", sum(1 for r in records if r.status == ScholarshipStatus.JUNK_RESEARCH))
+    quality_columns[4].metric("Other-school / graduate-only", sum(1 for r in records if r.candidate_type in {CandidateType.OTHER_SCHOOL_ONLY, CandidateType.GRADUATE_ONLY}))
+    action_columns = st.columns(5)
+    action_columns[0].metric("Apply Now", sum(1 for r in records if r.status == ScholarshipStatus.APPLY_NOW))
+    action_columns[1].metric("Quick Apply", sum(1 for r in records if r.status == ScholarshipStatus.QUICK_APPLY))
+    action_columns[2].metric("Maybe", sum(1 for r in records if r.status == ScholarshipStatus.MAYBE))
+    action_columns[3].metric("Prompts found", sum(len(r.essay_prompts) for r in records))
+    action_columns[4].metric("Drafts generated", len(drafts))
+    review_columns = st.columns(4)
+    review_columns[0].metric("Prompted candidates", sum(1 for r in records if r.essay_prompts))
+    review_columns[1].metric("User-approved apply queue", sum(1 for r in records if r.user_status == UserStatus.APPROVED_FOR_APPLY))
+    review_columns[2].metric("Drafts ready", sum(1 for d in drafts if d.status in {DraftStatus.READY_TO_REVIEW, DraftStatus.APPROVED_AUTOFILL}))
+    review_columns[3].metric("Packets ready", len(list((EXPORTS_PATH / "application_packets").glob("*.md"))))
+    decision_columns = st.columns(5)
+    decision_columns[0].metric("Rejected by user", sum(1 for r in records if r.user_status == UserStatus.REJECTED))
+    decision_columns[1].metric("Junk by user", sum(1 for r in records if r.user_status == UserStatus.JUNK))
+    decision_columns[2].metric("Missing only deadline", sum(1 for r in records if r.deadline is None and r.amount is not None and r.application_url is not None))
+    decision_columns[3].metric("Missing only amount", sum(1 for r in records if r.amount is None and r.deadline is not None and r.application_url is not None))
+    decision_columns[4].metric("Missing application URL", sum(1 for r in records if r.application_url is None))
+
     with st.sidebar:
         st.header(profile.preferred_name or profile.full_name)
         primary_education = profile.education[0]
@@ -698,11 +933,17 @@ def main() -> None:
     tabs = st.tabs([label for label, _, _ in TAB_CONFIG])
     for tab, (label, status, recommendation) in zip(tabs, TAB_CONFIG, strict=True):
         with tab:
+            if label == "Home":
+                _home_tab(records, drafts, database)
+                continue
             if label == "Autopilot":
                 _autopilot_tab(database, profile)
                 continue
             if label == "Approval Queue":
                 _approval_queue_tab(records, database)
+                continue
+            if label == "Review Queue":
+                _review_queue_tab(records, database)
                 continue
             if label == "Discovery":
                 _discovery_tab(database, profile)
@@ -720,7 +961,13 @@ def main() -> None:
                 else:
                     _empty_state(label)
                 continue
-            if status == ScholarshipStatus.MAV_MANUAL_CHECK:
+            if label == "Packets Generated":
+                matching = [r for r in records if (EXPORTS_PATH / "application_packets" / f"{slugify(r.name, fallback='scholarship')}-application-packet.md").exists()]
+            elif label == "Prompts Found":
+                matching = [r for r in records if r.essay_prompts]
+            elif label == "No Prompt Found":
+                matching = [r for r in records if not r.essay_prompts]
+            elif status == ScholarshipStatus.MAV_MANUAL_CHECK:
                 matching = [record for record in records if record.source_category == "uta_manual"]
             elif recommendation is not None:
                 matching = [

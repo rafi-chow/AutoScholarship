@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS scholarships (
     citizenship_residency_requirements_json TEXT NOT NULL DEFAULT '[]',
     no_essay_quick_apply INTEGER NOT NULL DEFAULT 0,
     manual_overrides_json TEXT NOT NULL DEFAULT '[]',
+    confidence_reasons_json TEXT NOT NULL DEFAULT '[]',
+    why_not_apply_now_json TEXT NOT NULL DEFAULT '[]',
+    ease_reasons_json TEXT NOT NULL DEFAULT '[]',
+    ease_blockers_json TEXT NOT NULL DEFAULT '[]',
     application_url TEXT,
     source_url TEXT,
     source_type TEXT NOT NULL DEFAULT 'manual',
@@ -42,6 +46,13 @@ CREATE TABLE IF NOT EXISTS scholarships (
     status TEXT NOT NULL DEFAULT 'new',
     pre_approved_submit INTEGER NOT NULL DEFAULT 0,
     notes TEXT,
+    candidate_type TEXT NOT NULL DEFAULT 'Unknown / Needs Manual Review',
+    confidence_score REAL NOT NULL DEFAULT 0,
+    user_status TEXT,
+    user_notes TEXT,
+    reviewed_at TEXT,
+    ease_score REAL NOT NULL DEFAULT 0,
+    estimated_time TEXT NOT NULL DEFAULT '30+ min',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(name, provider, application_url)
@@ -69,6 +80,8 @@ CREATE TABLE IF NOT EXISTS drafts (
     claims_to_verify_json TEXT NOT NULL DEFAULT '[]',
     missing_user_input_json TEXT NOT NULL DEFAULT '[]',
     why_angle_fits TEXT NOT NULL,
+    generation_source TEXT NOT NULL DEFAULT 'template_fallback',
+    generation_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(scholarship_id) REFERENCES scholarships(id) ON DELETE CASCADE,
@@ -129,6 +142,10 @@ JSON_FIELDS = (
     "required_documents",
     "citizenship_residency_requirements",
     "manual_overrides",
+    "confidence_reasons",
+    "why_not_apply_now",
+    "ease_reasons",
+    "ease_blockers",
 )
 
 BOOL_FIELDS = (
@@ -151,6 +168,22 @@ COLUMN_MIGRATIONS = {
     "manual_overrides_json": "TEXT NOT NULL DEFAULT '[]'",
     "source_category": "TEXT",
     "approved_autofill": "INTEGER NOT NULL DEFAULT 0",
+    "candidate_type": "TEXT NOT NULL DEFAULT 'Unknown / Needs Manual Review'",
+    "confidence_score": "REAL NOT NULL DEFAULT 0",
+    "confidence_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+    "why_not_apply_now_json": "TEXT NOT NULL DEFAULT '[]'",
+    "user_status": "TEXT",
+    "user_notes": "TEXT",
+    "reviewed_at": "TEXT",
+    "ease_score": "REAL NOT NULL DEFAULT 0",
+    "ease_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+    "ease_blockers_json": "TEXT NOT NULL DEFAULT '[]'",
+    "estimated_time": "TEXT NOT NULL DEFAULT '30+ min'",
+}
+
+DRAFT_COLUMN_MIGRATIONS = {
+    "generation_source": "TEXT NOT NULL DEFAULT 'template_fallback'",
+    "generation_error": "TEXT",
 }
 
 
@@ -182,6 +215,10 @@ class ScholarshipDatabase:
             for column, definition in COLUMN_MIGRATIONS.items():
                 if column not in existing:
                     connection.execute(f"ALTER TABLE scholarships ADD COLUMN {column} {definition}")
+            draft_existing = {row["name"] for row in connection.execute("PRAGMA table_info(drafts)")}
+            for column, definition in DRAFT_COLUMN_MIGRATIONS.items():
+                if column not in draft_existing:
+                    connection.execute(f"ALTER TABLE drafts ADD COLUMN {column} {definition}")
 
     def add_scholarship(self, scholarship: Scholarship) -> int:
         data = scholarship.model_dump(mode="json", exclude={"id"})
@@ -318,6 +355,14 @@ class ScholarshipDatabase:
             connection.execute(
                 f"UPDATE scholarships SET {', '.join(assignments)} WHERE id = ?",
                 values,
+            )
+
+    def update_user_review(self, scholarship_id: int, *, user_status: str, user_notes: str | None = None) -> None:
+        from datetime import datetime
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE scholarships SET user_status = ?, user_notes = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+                (user_status, user_notes, datetime.now().isoformat(), datetime.now().isoformat(), scholarship_id),
             )
 
     def add_source_reference(self, scholarship_id: int, source_name: str, source_url: str) -> None:
@@ -487,7 +532,8 @@ class ScholarshipDatabase:
                     scholarship_id, prompt, path, status, story_angle,
                     facts_used_json, claims_to_verify_json, missing_user_input_json,
                     why_angle_fits, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , generation_source, generation_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(scholarship_id, prompt) DO UPDATE SET
                     path=excluded.path,
                     status=excluded.status,
@@ -496,6 +542,8 @@ class ScholarshipDatabase:
                     claims_to_verify_json=excluded.claims_to_verify_json,
                     missing_user_input_json=excluded.missing_user_input_json,
                     why_angle_fits=excluded.why_angle_fits,
+                    generation_source=excluded.generation_source,
+                    generation_error=excluded.generation_error,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -503,6 +551,7 @@ class ScholarshipDatabase:
                     data["story_angle"], json.dumps(data["facts_used"]),
                     json.dumps(data["claims_to_verify"]), json.dumps(data["missing_user_input"]),
                     data["why_angle_fits"], data["created_at"], data["updated_at"],
+                    data["generation_source"], data["generation_error"],
                 ),
             )
             row = connection.execute(
@@ -568,6 +617,8 @@ class ScholarshipDatabase:
                 "claims_to_verify": json.loads(row["claims_to_verify_json"]),
                 "missing_user_input": json.loads(row["missing_user_input_json"]),
                 "why_angle_fits": row["why_angle_fits"],
+                "generation_source": row["generation_source"],
+                "generation_error": row["generation_error"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             })
@@ -601,6 +652,9 @@ class ScholarshipDatabase:
             "id", "name", "provider", "amount", "deadline", "application_url",
             "source_url", "source_type", "source_category", "competition_level", "effort_hours",
             "status", "notes", "created_at", "updated_at",
+            "candidate_type", "confidence_score",
+            "user_status", "user_notes", "reviewed_at",
+            "ease_score", "estimated_time",
         ):
             scholarship_data[key] = row[key]
         for key in BOOL_FIELDS:

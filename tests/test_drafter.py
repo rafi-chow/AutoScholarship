@@ -5,7 +5,7 @@ import pytest
 
 from src.db import ScholarshipDatabase
 from src.drafter import generate_and_save_draft, select_story_angle
-from src.models import DraftStatus, Scholarship
+from src.models import DraftSource, DraftStatus, Scholarship
 from src.profile import load_profile
 
 
@@ -150,3 +150,16 @@ def test_draft_review_status_can_be_updated(tmp_path: Path) -> None:
     assert updated.status == DraftStatus.READY_TO_REVIEW
     assert database.list_drafts(DraftStatus.READY_TO_REVIEW) == [updated]
 
+
+def test_ai_and_fallback_draft_sources_are_persisted(tmp_path: Path) -> None:
+    class FakeAI:
+        enabled = True
+        def generate(self, prompt): return "A grounded AI-generated answer about verified software goals."
+    database, scholarship = _saved_scholarship(tmp_path)
+    ai = generate_and_save_draft(scholarship, "What are your career goals?", database=database, data_dir=DATA_DIR, output_root=tmp_path / "draft-output", llm=FakeAI(), require_llm=True)
+    assert ai.generation_source == DraftSource.AI
+    class NoAI:
+        enabled = False
+    fallback = generate_and_save_draft(scholarship, "Describe your leadership experience.", database=database, data_dir=DATA_DIR, output_root=tmp_path / "draft-output", llm=NoAI())
+    assert fallback.generation_source == DraftSource.TEMPLATE_FALLBACK
+    assert fallback.status == DraftStatus.NEEDS_REGENERATION
